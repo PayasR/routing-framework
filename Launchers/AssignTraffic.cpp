@@ -1,10 +1,17 @@
 #include <algorithm>
+#include <cassert>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <random>
+#include <stack>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+#include <boost/dynamic_bitset.hpp>
+#include <routingkit/customizable_contraction_hierarchy.h>
+#include <routingkit/nested_dissection.h>
 
 #include "Algorithms/TrafficAssignment/Adapters/BiDijkstraAdapter.h"
 #include "Algorithms/TrafficAssignment/Adapters/CCHAdapter.h"
@@ -26,6 +33,7 @@
 #include "DataStructures/Graph/Graph.h"
 #include "DataStructures/Utilities/OriginDestination.h"
 #include "Tools/CommandLine/CommandLineParser.h"
+#include "Tools/BinaryIO.h"
 
 void printUsage() {
   std::cout <<
@@ -44,24 +52,126 @@ void printUsage() {
       "  -ord <order>      the order of the OD-pairs\n"
       "                      possible values: random input (default) sorted\n"
       "  -s <seed>         start the random number generator with <seed>\n"
+      "  -U <num>          the maximum diameter of a cell (used for ordering OD-pairs)\n"
+      "  -si <intervals>   a blank-separated list of sampling intervals\n"
       "  -i <file>         the input graph in binary format\n"
       "  -od <file>        the OD-pairs to be assigned\n"
       "  -o <file>         the output CSV file without file extension\n"
+      "  -dist <file>      output the OD-distances after each iteration in <file>\n"
+      "  -fp <file>        output the flow pattern after each iteration in <file>\n"
       "  -help             display this help and exit\n";
+}
+
+// An active vertex during a DFS, i.e., a vertex that has been reached but not finished.
+struct ActiveVertex {
+  // Constructs an active vertex.
+  ActiveVertex(const int id, const int nextUnexploredEdge)
+      : id(id), nextUnexploredEdge(nextUnexploredEdge) {}
+
+  int id;                 // The ID of this active vertex.
+  int nextUnexploredEdge; // The next unexplored incident edge.
+};
+
+// Assigns origin and destination zones to OD-pairs based on a partition of the elimination tree.
+template <typename GraphT>
+inline void assignZonesToODPairs(
+    std::vector<ClusteredOriginDestination>& odPairs, const GraphT& inGraph, const int maxDiam) {
+  // Convert the input graph to RoutingKit's graph representation.
+  const int numVertices = inGraph.numVertices();
+  std::vector<float> lats(numVertices);
+  std::vector<float> lngs(numVertices);
+  std::vector<unsigned int> tails(inGraph.numEdges());
+  std::vector<unsigned int> heads(inGraph.numEdges());
+  FORALL_VERTICES(inGraph, u) {
+    lats[u] = inGraph.latLng(u).latInDeg();
+    lngs[u] = inGraph.latLng(u).lngInDeg();
+    FORALL_INCIDENT_EDGES(inGraph, u, e) {
+      tails[e] = u;
+      heads[e] = inGraph.edgeHead(e);
+    }
+  }
+
+  // Compute the contraction order and the corresponding elimination tree.
+  const auto graph = RoutingKit::make_graph_fragment(numVertices, tails, heads);
+  auto computeSep = [&lats, &lngs](const RoutingKit::GraphFragment& graph) {
+    return derive_separator_from_cut(graph, inertial_flow(graph, 30, lats, lngs).is_node_on_side);
+  };
+  const auto order = compute_nested_node_dissection_order(graph, computeSep);
+  const auto cch = RoutingKit::CustomizableContractionHierarchy(order, tails, heads);
+  std::vector<int> tree(cch.elimination_tree_parent.begin(), cch.elimination_tree_parent.end());
+
+  // Build the elimination out-tree from the elimination in-tree.
+  std::vector<int> firstChild(numVertices + 1);
+  std::vector<int> children(numVertices - 1);
+  for (int v = 0; v < numVertices - 1; ++v)
+    ++firstChild[tree[v]];
+  int first = 0; // The index of the first edge out of the current/next vertex.
+  for (int v = 0; v <= numVertices; ++v) {
+    std::swap(first, firstChild[v]);
+    first += firstChild[v];
+  }
+  for (int v = 0; v < numVertices - 1; ++v)
+    children[firstChild[tree[v]]++] = v;
+  for (int v = numVertices - 1; v > 0; --v)
+    firstChild[v] = firstChild[v - 1];
+  firstChild.front() = 0;
+
+  // Decompose the elimination tree into as few cells with bounded diameter as possible.
+  boost::dynamic_bitset<> isRoot(numVertices);
+  std::vector<int> height(numVertices); // height[v] is the height of the subtree rooted at v.
+  for (int v = 0; v < numVertices; ++v) {
+    const int first = firstChild[v];
+    const int last = firstChild[v + 1];
+    std::sort(children.begin() + first, children.begin() + last, [&](const int u, const int v) {
+      assert(u >= 0); assert(u < height.size());
+      assert(v >= 0); assert(v < height.size());
+      return height[u] < height[v];
+    });
+    for (int i = first; i < last; ++i)
+      if (height[v] + 1 + height[children[i]] <= maxDiam)
+        height[v] = 1 + height[children[i]];
+      else
+        isRoot[children[i]] = true;
+  }
+
+  // Number the cells in the order in which they are discovered during a DFS from the root.
+  int freeCellId = 1; // The next free cell ID.
+  std::vector<int> cellId(numVertices);
+  std::stack<ActiveVertex, std::vector<ActiveVertex>> activeVertices;
+  activeVertices.emplace(numVertices - 1, firstChild[numVertices - 1]);
+  while (!activeVertices.empty()) {
+    auto &v = activeVertices.top();
+    const int head = children[v.nextUnexploredEdge];
+    ++v.nextUnexploredEdge;
+    cellId[order[head]] = isRoot[head] ? freeCellId++ : cellId[order[v.id]];
+    if (v.nextUnexploredEdge == firstChild[v.id + 1])
+      activeVertices.pop();
+    if (firstChild[head] != firstChild[head + 1])
+      activeVertices.emplace(head, firstChild[head]);
+  }
+
+  // Assign origin and destination zones to OD-pairs.
+  for (auto& od : odPairs) {
+    od.originZone = cellId[od.origin];
+    od.destinationZone = cellId[od.destination];
+  }
 }
 
 // Assigns all OD-flows onto the input graph.
 template <typename FrankWolfeAssignmentT>
 void assignTraffic(const CommandLineParser& clp) {
-  const std::string infile = clp.getValue<std::string>("i");
-  const std::string odfile = clp.getValue<std::string>("od");
-  const std::string csvfile = clp.getValue<std::string>("o");
+  const std::string infilename = clp.getValue<std::string>("i");
+  const std::string odFilename = clp.getValue<std::string>("od");
+  const std::string csvFilename = clp.getValue<std::string>("o");
+  const std::string distFilename = clp.getValue<std::string>("dist");
+  const std::string patternFilename = clp.getValue<std::string>("fp");
   const std::string ord = clp.getValue<std::string>("ord", "input");
+  const int maxDiam = clp.getValue<int>("U", 40);
   const double period = clp.getValue<double>("p", 1);
 
-  std::ifstream in(infile, std::ios::binary);
+  std::ifstream in(infilename, std::ios::binary);
   if (!in.good())
-    throw std::invalid_argument("file not found -- '" + infile + "'");
+    throw std::invalid_argument("file not found -- '" + infilename + "'");
   typename FrankWolfeAssignmentT::InputGraph graph(in);
   in.close();
 
@@ -71,40 +181,86 @@ void assignTraffic(const CommandLineParser& clp) {
     graph.edgeId(e) = id++;
   }
 
-  std::vector<ClusteredOriginDestination> odPairs = importClusteredODPairsFrom(odfile);
+  std::vector<ClusteredOriginDestination> odPairs = importClusteredODPairsFrom(odFilename);
   if (ord == "random") {
     std::default_random_engine rand(clp.getValue<int>("s", 19900325));
     std::shuffle(odPairs.begin(), odPairs.end(), rand);
   } else if (ord == "sorted") {
+    assignZonesToODPairs(odPairs, graph, maxDiam);
     std::sort(odPairs.begin(), odPairs.end());
   } else if (ord != "input") {
     throw std::invalid_argument("invalid order -- '" + ord + "'");
   }
 
+  const int numIterations = clp.getValue<int>("n");
+  if (numIterations < 0) {
+    const std::string msg("negative number of iterations");
+    throw std::invalid_argument(msg + " -- " + std::to_string(numIterations));
+  }
+
+  const auto intervals = clp.getValues<int>("si");
+  if (!intervals.empty() && intervals[0] < 2) {
+    const std::string msg("sampling interval is less than 2");
+    throw std::invalid_argument(msg + " -- " + std::to_string(intervals[0]));
+  }
+  for (int i = 1; i < intervals.size(); ++i) {
+    if (intervals[i] < 2) {
+      const std::string msg("sampling interval is less than 2");
+      throw std::invalid_argument(msg + " -- " + std::to_string(intervals[i]));
+    }
+    if (intervals[i - 1] % intervals[i] != 0) {
+      const std::string msg("sampling interval is no divisor of its predecessor");
+      throw std::invalid_argument(msg + " -- " + std::to_string(intervals[i]));
+    }
+  }
+
   std::ofstream csv;
-  if (!csvfile.empty()) {
-    csv.open(csvfile + ".csv");
+  if (!csvFilename.empty()) {
+    csv.open(csvFilename + ".csv");
     if (!csv.good())
-      throw std::invalid_argument("file cannot be opened -- '" + csvfile + ".csv'");
-    csv << "# Input graph: " << infile << "\n";
-    csv << "# OD-pairs: " << odfile << "\n";
+      throw std::invalid_argument("file cannot be opened -- '" + csvFilename + ".csv'");
+    csv << "# Input graph: " << infilename << "\n";
+    csv << "# OD-pairs: " << odFilename << "\n";
     csv << "# Objective: " << (clp.isSet("so") ? "SO" : "UE") << "\n";
     csv << "# Function: " << clp.getValue<std::string>("f", "modified_davidson") << "\n";
     csv << "# Shortest-path algo: " << clp.getValue<std::string>("a", "dijkstra") << "\n";
     csv << "# Period of analysis: " << period << "h\n";
+    csv << "# Sampling intervals: [";
+    for (int i = 0, prevInterval = -1; i < intervals.size(); prevInterval = intervals[i++])
+      if (intervals[i] != prevInterval)
+        csv << intervals[i] << '@' << i + 1 << ':';
+    csv << "1@" << intervals.size() + 1 << "]\n";
     csv << std::flush;
   }
 
-  FrankWolfeAssignmentT assign(graph, odPairs, csv, clp.isSet("v"));
+  std::ofstream distanceFile;
+  if (!distFilename.empty()) {
+    distanceFile.open(distFilename + ".csv");
+    if (!distanceFile.good())
+      throw std::invalid_argument("file cannot be opened -- '" + distFilename + ".csv'");
+    if (!csvFilename.empty())
+      distanceFile << "# Main file: " << csvFilename << ".csv\n";
+    distanceFile << "iteration,travel_cost\n";
+  }
+
+  std::ofstream patternFile;
+  if (!patternFilename.empty()) {
+    patternFile.open(patternFilename + ".fp.bin", std::ios::binary);
+    if (!patternFile.good())
+      throw std::invalid_argument("file cannot be opened -- '" + patternFilename + ".fp.bin'");
+    bio::write(patternFile, period);
+  }
+
+  FrankWolfeAssignmentT assign(graph, odPairs, csv, distanceFile, patternFile, clp.isSet("v"));
 
   if (csv.is_open()) {
     csv << "# Preprocessing time: " << assign.stats.totalRunningTime << "ms\n";
-    csv << "iteration,customization_time,query_time,line_search_time,total_time,";
-    csv << "avg_change,max_change,total_travel_cost,checksum\n";
+    csv << "iteration,sampling_interval,customization_time,query_time,line_search_time,total_time,";
+    csv << "avg_change,max_change,obj_function_value,total_travel_cost,checksum\n";
     csv << std::flush;
   }
 
-  assign.run(clp.getValue<int>("n"));
+  assign.run(numIterations, intervals);
 }
 
 // Picks the shortest-path algorithm according to the command line options.

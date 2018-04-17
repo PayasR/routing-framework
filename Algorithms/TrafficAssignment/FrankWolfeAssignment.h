@@ -16,6 +16,7 @@
 #include "DataStructures/Utilities/OriginDestination.h"
 #include "Stats/TrafficAssignment/FrankWolfeAssignmentStats.h"
 #include "Tools/Simd/AlignVector.h"
+#include "Tools/BinaryIO.h"
 #include "Tools/Timer.h"
 
 // A traffic assignment procedure based on the Frank-Wolfe method (also known as convex combinations
@@ -31,20 +32,28 @@ class FrankWolfeAssignment {
 
   // Constructs an assignment procedure based on the Frank-Wolfe method.
   FrankWolfeAssignment(InputGraphT& graph, const std::vector<ClusteredOriginDestination>& odPairs,
-                       std::ofstream& csv, const bool verbose = true)
+                       std::ofstream& csv, std::ofstream& distFile, std::ofstream& patternFile,
+                       const bool verbose = true)
       : allOrNothingAssignment(graph, odPairs, verbose),
         inputGraph(graph),
         trafficFlows(graph.numEdges()),
         travelCostFunction(graph),
         objFunction(travelCostFunction),
         csv(csv),
+        distanceFile(distFile),
+        patternFile(patternFile),
         verbose(verbose) {
     stats.totalRunningTime = allOrNothingAssignment.stats.totalRoutingTime;
   }
 
   // Assigns all OD-flows onto the input graph.
-  void run(const int numIterations = 0) {
+  void run(const int numIterations = 0, const std::vector<int>& samplingIntervals = {}) {
     assert(numIterations >= 0);
+    assert(samplingIntervals.empty() || samplingIntervals[0] > 0);
+    for (int i = 1; i < samplingIntervals.size(); ++i) {
+      assert(samplingIntervals[i] > 0);
+      assert(samplingIntervals[i - 1] % samplingIntervals[i] == 0);
+    }
     const AllOrNothingAssignmentStats& substats = allOrNothingAssignment.stats;
 
     // Initialization.
@@ -61,7 +70,8 @@ class FrankWolfeAssignment {
         weight.store_partial(inputGraph.numEdges() - e, &inputGraph.travelCost(e));
     }
 #endif
-    allOrNothingAssignment.run();
+    const int interval = !samplingIntervals.empty() ? samplingIntervals[0] : 1;
+    allOrNothingAssignment.run(interval);
 #ifdef TA_NO_SIMD_LINE_SEARCH
     FORALL_EDGES(inputGraph, e) {
       trafficFlows[e] = allOrNothingAssignment.trafficFlowOn(e);
@@ -84,18 +94,28 @@ class FrankWolfeAssignment {
 #endif
     stats.lastRunningTime = timer.elapsed();
     stats.lastLineSearchTime = stats.lastRunningTime - substats.lastRoutingTime;
+    stats.objFunctionValue = objFunction(trafficFlows);
     stats.finishIteration();
 
     if (csv.is_open()) {
-      csv << substats.numIterations << "," << substats.lastCustomizationTime << ",";
-      csv << substats.lastQueryTime << "," << stats.lastLineSearchTime << ",";
-      csv << stats.lastRunningTime << ",nan,nan," << stats.totalTravelCost << ",";
+      csv << substats.numIterations << "," << interval << ",";
+      csv << substats.lastCustomizationTime << "," << substats.lastQueryTime << ",";
+      csv << stats.lastLineSearchTime << "," << stats.lastRunningTime << ",nan,nan,";
+      csv << stats.objFunctionValue << "," << stats.totalTravelCost << ",";
       csv << substats.lastChecksum << std::endl;
     }
+
+    if (distanceFile.is_open())
+      for (const auto dist : substats.lastDistances)
+        distanceFile << substats.numIterations << ',' << dist << '\n';
+
+    if (patternFile.is_open())
+      bio::write(patternFile, trafficFlows);
 
     if (verbose) {
       std::cout << "  Line search: " << stats.lastLineSearchTime << "ms";
       std::cout << "  Total: " << stats.lastRunningTime << "ms\n";
+      std::cout << "  Objective function value: " << stats.objFunctionValue << "\n";
       std::cout << "  Total travel cost: " << stats.totalTravelCost << "\n";
       std::cout << std::flush;
     }
@@ -120,7 +140,9 @@ class FrankWolfeAssignment {
 #endif
 
       // Direction finding.
-      allOrNothingAssignment.run();
+      const int interval = substats.numIterations < samplingIntervals.size() ?
+          samplingIntervals[substats.numIterations] : 1;
+      allOrNothingAssignment.run(interval);
 
       // Line search.
       const double alpha = bisectionMethod([this](const double alpha) {
@@ -172,21 +194,31 @@ class FrankWolfeAssignment {
 #endif
       stats.lastRunningTime = timer.elapsed();
       stats.lastLineSearchTime = stats.lastRunningTime - substats.lastRoutingTime;
+      stats.objFunctionValue = objFunction(trafficFlows);
       stats.finishIteration();
 
       if (csv.is_open()) {
-        csv << substats.numIterations << "," << substats.lastCustomizationTime << ",";
-        csv << substats.lastQueryTime << "," << stats.lastLineSearchTime << ",";
-        csv << stats.lastRunningTime << "," << substats.avgChangeInDistances << ",";
-        csv << substats.maxChangeInDistances << "," << stats.totalTravelCost << ",";
+        csv << substats.numIterations << "," << interval << ",";
+        csv << substats.lastCustomizationTime << "," << substats.lastQueryTime << ",";
+        csv << stats.lastLineSearchTime << "," << stats.lastRunningTime << ",";
+        csv << substats.avgChangeInDistances << "," << substats.maxChangeInDistances << ",";
+        csv << stats.objFunctionValue << "," << stats.totalTravelCost << ",";
         csv << substats.lastChecksum << std::endl;
       }
+
+      if (distanceFile.is_open())
+        for (const auto dist : substats.lastDistances)
+          distanceFile << substats.numIterations << ',' << dist << '\n';
+
+      if (patternFile.is_open())
+        bio::write(patternFile, trafficFlows);
 
       if (verbose) {
         std::cout << "  Line search: " << stats.lastLineSearchTime << "ms";
         std::cout << "  Total: " << stats.lastRunningTime << "ms\n";
         std::cout << "  Max change in OD-distances: " << substats.maxChangeInDistances << "\n";
         std::cout << "  Avg change in OD-distances: " << substats.avgChangeInDistances << "\n";
+        std::cout << "  Objective function value: " << stats.objFunctionValue << "\n";
         std::cout << "  Total travel cost: " << stats.totalTravelCost << "\n";
         std::cout << std::flush;
       }
@@ -225,6 +257,8 @@ class FrankWolfeAssignment {
   TravelCostFunction travelCostFunction; // A functor returning the travel cost on an edge.
   ObjFunction objFunction;               // The objective function to be minimized (UE or SO).
   std::ofstream& csv;                    // The output CSV file containing statistics.
+  std::ofstream& distanceFile;           // The output file containing the OD-distances.
+  std::ofstream& patternFile;            // The output file containing the flow patterns.
   const bool verbose;                    // Should informative messages be displayed?
 };
 

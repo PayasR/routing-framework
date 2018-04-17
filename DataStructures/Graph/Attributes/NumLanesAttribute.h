@@ -5,10 +5,8 @@
 #include "DataStructures/Graph/Attributes/AbstractAttribute.h"
 
 // An attribute associating a number of lanes with each edge of a graph.
-class NumLanesAttribute : public AbstractAttribute<int> {
+class NumLanesAttribute : public AbstractAttribute<double> {
  public:
-  static constexpr const char* NAME = "num_lanes"; // The attribute's unique name.
-
   // Returns the number of lanes of edge e.
   const Type& numLanes(const int e) const {
     assert(e >= 0); assert(e < values.size());
@@ -20,4 +18,7 @@ class NumLanesAttribute : public AbstractAttribute<int> {
     assert(e >= 0); assert(e < values.size());
     return values[e];
   }
+
+ protected:
+  static constexpr const char* NAME = "num_lanes"; // The attribute's unique name.
 };

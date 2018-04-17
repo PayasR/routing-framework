@@ -14,11 +14,12 @@
 #include "DataStructures/Geometry/Point.h"
 #include "DataStructures/Graph/Attributes/CapacityAttribute.h"
 #include "DataStructures/Graph/Attributes/CoordinateAttribute.h"
+#include "DataStructures/Graph/Attributes/FreeFlowSpeedAttribute.h"
 #include "DataStructures/Graph/Attributes/LatLngAttribute.h"
 #include "DataStructures/Graph/Attributes/LengthAttribute.h"
 #include "DataStructures/Graph/Attributes/NumLanesAttribute.h"
 #include "DataStructures/Graph/Attributes/TravelTimeAttribute.h"
-#include "DataStructures/Graph/Attributes/XatfRoadCategoryAttribute.h"
+#include "DataStructures/Graph/Attributes/VertexIdAttribute.h"
 #include "Tools/LexicalCast.h"
 #include "Tools/StringHelpers.h"
 
@@ -92,15 +93,14 @@ class VisumImporter {
       return false;
 
     assert(origToNewIds.find(currentVertex.id) == origToNewIds.end());
-    origToNewIds[currentVertex.id] = nextVertexId;
-    currentVertex.id = nextVertexId++;
+    origToNewIds[currentVertex.id] = nextVertexId++;
     currentVertex.latLng = conversion.convert(currentVertex.coordinate);
     return true;
   }
 
   // Returns the ID of the current vertex. Vertices must have sequential IDs from 0 to n − 1.
   int vertexId() const {
-    return currentVertex.id;
+    return nextVertexId - 1;
   }
 
   // Reads the next edge from disk. Returns false if there are no more edges.
@@ -166,7 +166,7 @@ class VisumImporter {
   // default value if the attribute is not part of the file format.
   template <typename Attr>
   typename Attr::Type getValue() const {
-    return Attr::DEFAULT_VALUE;
+    return Attr::defaultValue();
   }
 
   // Closes the input file(s).
@@ -250,4 +250,10 @@ inline NumLanesAttribute::Type VisumImporter::getValue<NumLanesAttribute>() cons
 template <>
 inline TravelTimeAttribute::Type VisumImporter::getValue<TravelTimeAttribute>() const {
   return std::round(36.0 * currentEdge.length / currentEdge.freeFlowSpeed);
+}
+
+// Returns the value of the vertex ID attribute for the current vertex.
+template <>
+inline VertexIdAttribute::Type VisumImporter::getValue<VertexIdAttribute>() const {
+  return currentVertex.id;
 }

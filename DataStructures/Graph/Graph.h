@@ -16,6 +16,7 @@
 #include "DataStructures/Utilities/Permutation.h"
 #include "Tools/Simd/AlignVector.h"
 #include "Tools/BinaryIO.h"
+#include "Tools/Constants.h"
 #include "Tools/ContainerHelpers.h"
 #include "Tools/TemplateProgramming.h"
 #include "Tools/Workarounds.h"
@@ -203,6 +204,21 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
     return false;
   }
 
+  // Returns the index of the edge between u and v, or -1 if there is no (unique) edge.
+  int uniqueEdgeBetween(const int u, const int v) const {
+    int result = INVALID_EDGE;
+    for (int e = firstEdge(u); e != lastEdge(u); ++e)
+      if (edgeHeads[e] == v) {
+        if (result == INVALID_EDGE) {
+          result = e;
+        } else {
+          result = INVALID_EDGE;
+          break;
+        }
+      }
+    return result;
+  }
+
   // Ensures that the graph can hold at least the specified number of vertices and edges without
   // requiring reallocation.
   void reserve(const int numVertices, const int numEdges) {
@@ -219,7 +235,7 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
     range.first() = edgeHeads.size();
     range.last() = range.first();
     outEdges.push_back(range);
-    RUN_FORALL(VertexAttributes::values.push_back(use(VertexAttributes::DEFAULT_VALUE)));
+    RUN_FORALL(VertexAttributes::values.push_back(use(VertexAttributes::defaultValue())));
     return numVertices() - 1;
   }
 
@@ -239,7 +255,8 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
     range.last() = range.first();
     outEdges.insert(outEdges.end(), num, range);
     const int size = numVertices();
-    RUN_FORALL(VertexAttributes::values.resize(size, use(VertexAttributes::DEFAULT_VALUE)));
+    unused(size);
+    RUN_FORALL(VertexAttributes::values.resize(size, use(VertexAttributes::defaultValue())));
   }
 
   // Inserts an edge from the last inserted vertex to v. Returns the index of the inserted edge.
@@ -250,7 +267,7 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
     assert(v >= 0);
     ++outEdges.back().last();
     edgeHeads.push_back(v);
-    RUN_FORALL(EdgeAttributes::values.push_back(use(EdgeAttributes::DEFAULT_VALUE)));
+    RUN_FORALL(EdgeAttributes::values.push_back(EdgeAttributes::defaultValue()));
     ++edgeCount;
     return numEdges() - 1;
   }
@@ -273,9 +290,54 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
 
   // Inserts an edge from u to v. Returns the index of the newly inserted edge. Note that this
   // operation is not supported by static graphs.
-  int insertEdge(const int /*u*/, const int /*v*/) {
+  int insertEdge(const int u, const int v) {
     static_assert(dynamic, "Graph::insertEdge is not supported by static graphs.");
-    return 0;
+    assert(u >= 0); assert(u < outEdges.size());
+    ++edgeCount;
+
+    // Check if there is room to the right of the last edge out of u.
+    int idx = outEdges[u].last();
+    if (idx < edgeHeads.size() && !isValidEdge(idx)) {
+      ++outEdges[u].last();
+      edgeHeads[idx] = v;
+      RUN_FORALL(EdgeAttributes::values[idx] = EdgeAttributes::defaultValue());
+      return idx;
+    }
+
+    // Check if there is room to the left of the first edge out of u.
+    idx = outEdges[u].first() - 1;
+    if (idx >= 0 && !isValidEdge(idx)) {
+      --outEdges[u].first();
+      edgeHeads[idx] = v;
+      RUN_FORALL(EdgeAttributes::values[idx] = EdgeAttributes::defaultValue());
+      return idx;
+    }
+
+    // Check if the last edge out of u is at the end of the edge array.
+    idx = outEdges[u].last();
+    if (idx == edgeHeads.size()) {
+      ++outEdges[u].last();
+      edgeHeads.push_back(v);
+      RUN_FORALL(EdgeAttributes::values.push_back(EdgeAttributes::defaultValue()));
+      return idx;
+    }
+
+    // Move the edges incident on u to the end of the edge array.
+    const int oldFirst = outEdges[u].first();
+    const int newFirst = edgeHeads.size();
+    const int deg = outEdges[u].last() - outEdges[u].first();
+    const int size = edgeHeads.size() + deg + 1;
+    edgeHeads.resize(size);
+    RUN_FORALL(EdgeAttributes::values.resize(size, EdgeAttributes::defaultValue()));
+    for (int i = 0; i != deg; ++i) {
+      edgeHeads[newFirst + i] = edgeHeads[oldFirst + i];
+      edgeHeads[oldFirst + i] = INVALID_EDGE;
+      RUN_FORALL(EdgeAttributes::values[newFirst + i] = EdgeAttributes::values[oldFirst + i]);
+    }
+    edgeHeads.back() = v;
+    outEdges[u].first() = newFirst;
+    outEdges[u].last() = edgeHeads.size();
+    return maxEdgeIndex();
   }
 
   // Inserts an edge with the specified attributes from u to v. Returns the index of the newly
@@ -286,6 +348,20 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
     const int idx = insertEdge(u, v);
     RUN_FORALL(EdgeAttributes::values[idx] = std::forward<Attrs>(attrs));
     return idx;
+  }
+
+  // Removes the edge out of vertex u with index e.
+  void removeEdge(const int u, const int e) {
+    static_assert(dynamic, "Graph::removeEdge is not supported by static graphs.");
+    assert(u >= 0); assert(u < outEdges.size());
+    assert(e >= outEdges[u].first()); assert(e < outEdges[u].last());
+    const int last = --outEdges[u].last();
+    if (e != last) {
+      edgeHeads[e] = edgeHeads[last];
+      RUN_FORALL(EdgeAttributes::values[e] = EdgeAttributes::values[last]);
+    }
+    edgeHeads[last] = INVALID_EDGE;
+    --edgeCount;
   }
 
   // Sets the head of edge e to vertex v.
@@ -401,14 +477,14 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
     for (int i = 0, u = bitmask.find_first(); i != nextId; ++i, u = bitmask.find_next(u)) {
       // Copy the current vertex belonging to the subgraph.
       const int first = edgeCount; // The index of the first edge out of u.
-      RUN_FORALL(VertexAttributes::values[i] = VertexAttributes::values[u]);
+      RUN_FORALL(VertexAttributes::values[i] = std::move(VertexAttributes::values[u]));
 
       // Copy the edges out of u going to vertices belonging to the subgraph.
       for (int e = firstEdge(u); e != lastEdge(u); ++e) {
         const int v = origToNewIds[edgeHeads[e]];
         if (v != -1) {
           edgeHeads[edgeCount] = v;
-          RUN_FORALL(EdgeAttributes::values[edgeCount] = EdgeAttributes::values[e]);
+          RUN_FORALL(EdgeAttributes::values[edgeCount] = std::move(EdgeAttributes::values[e]));
           ++edgeCount;
         }
       }
@@ -640,7 +716,7 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
         // Skip the attribute's values, since the attribute is not associated with the graph.
         in.seekg(size, std::ios::cur);
     }
-    RUN_FORALL(VertexAttributes::values.resize(numVertices, use(VertexAttributes::DEFAULT_VALUE)));
+    RUN_FORALL(VertexAttributes::values.resize(numVertices, VertexAttributes::defaultValue()));
 
     // Fill the values of the edge attributes.
     int numEdgeAttrs;
@@ -657,7 +733,7 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
         // Skip the attribute's values, since the attribute is not associated with the graph.
         in.seekg(size, std::ios::cur);
     }
-    RUN_FORALL(EdgeAttributes::values.resize(edgeCount, use(EdgeAttributes::DEFAULT_VALUE)));
+    RUN_FORALL(EdgeAttributes::values.resize(edgeCount, EdgeAttributes::defaultValue()));
 
     assert(validate());
   }
@@ -797,7 +873,7 @@ class Graph<VertexAttrs<VertexAttributes...>, EdgeAttrs<EdgeAttributes...>, dyna
       typename Attr, typename SourceT,
       typename = std::enable_if_t<!std::is_base_of<Attr, SourceT>::value>>
   void setAttribute(const SourceT& /*src*/, const int size) {
-    Attr::values.resize(size, use(Attr::DEFAULT_VALUE));
+    Attr::values.resize(size, Attr::defaultValue());
   }
 
   // Reorders the edges according to the specified permutation.

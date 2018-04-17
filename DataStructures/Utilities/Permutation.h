@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <fstream>
 #include <random>
 #include <utility>
 #include <vector>
@@ -72,7 +73,7 @@ class Permutation {
     assert(cont.size() == permutation.size());
     ContT temp(cont.size());
     for (int i = 0; i != cont.size(); ++i)
-      temp[permutation[i]] = cont[i];
+      temp[permutation[i]] = std::move(cont[i]);
     cont.swap(temp);
   }
 

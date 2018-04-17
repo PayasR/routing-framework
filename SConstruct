@@ -1,14 +1,14 @@
 import os
 
 # Directories containing .cpp source files.
-srcDirs = ['Launchers', 'RawData']
+srcDirs = ['Launchers', 'RawData', 'RawData/Stuttgart']
 
 # Common compiler options.
 cflags = '-std=c99'
 cxxflags = '-std=c++14'
 ccflags = (
   '-Werror -Wfatal-errors -Wpedantic -pedantic-errors -Wall -Wextra '
-  '-Wno-missing-braces -Wno-strict-overflow -Wno-sign-compare ')
+  '-Wno-missing-braces -Wno-unknown-pragmas -Wno-strict-overflow -Wno-sign-compare ')
 
 # Additional compiler options per build variant.
 debug = '-O0 -g '
@@ -21,7 +21,7 @@ avx = '-mavx2 -mfma'
 
 # Get options from the command line.
 variant = ARGUMENTS.get('variant', 'Devel')
-ext = ARGUMENTS.get('ext', 'sse')
+simd = ARGUMENTS.get('simd', 'sse')
 
 # Assemble ccflags according to the build variant.
 if variant == 'Debug':
@@ -35,13 +35,13 @@ else:
   print("Valid values are: ('Debug', 'Devel', 'Release')")
   Exit(1)
 
-# Assemble ccflags according to the instruction set extension.
-if ext == 'sse':
+# Assemble ccflags according to the SIMD extension.
+if simd == 'sse':
   ccflags += sse
-elif ext == 'avx':
+elif simd == 'avx':
   ccflags += avx
 else:
-  print('Invalid value for option ext: ' + ext + '.')
+  print('Invalid value for option simd: ' + simd + '.')
   print("Valid values are: ('sse', 'avx')")
   Exit(1)
 

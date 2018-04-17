@@ -1,11 +1,19 @@
-p1 = Program(source=['ComputeDijkstraRanks.cpp'], parse_flags='-DCSV_IO_NO_THREAD')
-p2 = Program(source=['ConvertGraph.cpp'], parse_flags='-DCSV_IO_NO_THREAD', LIBS=['proj'])
-p3 = Program(source=['GenerateODPairs.cpp'], parse_flags='-DCSV_IO_NO_THREAD')
-p4 = Program(source=['ParseMobiTopp.cpp'], parse_flags='-DCSV_IO_NO_THREAD')
+p1 = Program(source=['CalibrateOsm.cpp'], LIBS=['routingkit'])
+p2 = Program(source=['ComputeDijkstraRanks.cpp'], parse_flags='-DCSV_IO_NO_THREAD')
+p3 = Program(
+    source=['ConvertGraph.cpp'], parse_flags='-DCSV_IO_NO_THREAD', LIBS=['proj', 'routingkit'])
+p4 = Program(source=['GenerateMatchingODPairs.cpp'], LIBS=['routingkit'])
+p5 = Program(source=['GenerateODPairs.cpp'], parse_flags='-DCSV_IO_NO_THREAD')
+p6 = Program(source=['ParseMobiTopp.cpp'], parse_flags='-DCSV_IO_NO_THREAD')
+p7 = Program(
+    source=['RadiationModel.cpp'], parse_flags='-DCSV_IO_NO_THREAD', LIBS=['proj', 'routingkit'])
 
-Alias('ComputeDijkstraRanks', p1)
-Alias('ConvertGraph', p2)
-Alias('GenerateODPairs', p3)
-Alias('ParseMobiTopp', p4)
+Alias('CalibrateOsm', p1)
+Alias('ComputeDijkstraRanks', p2)
+Alias('ConvertGraph', p3)
+Alias('GenerateMatchingODPairs', p4)
+Alias('GenerateODPairs', p5)
+Alias('ParseMobiTopp', p6)
+Alias('RadiationModel', p7)
 
-Return('p1', 'p2', 'p3', 'p4')
+Return('p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7')
