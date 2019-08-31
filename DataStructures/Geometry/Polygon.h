@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <ostream>
 #include <vector>
 
@@ -107,6 +108,14 @@ class Polygon {
     return vertices.erase(pos);
   }
 
+  // Removes from this polygon all of the vertices between first, inclusive, and last, exclusive.
+  VertexIterator removeRange(ConstVertexIterator first, ConstVertexIterator last) {
+    assert(first >= vertices.begin());
+    assert(last <= vertices.end());
+    assert(first <= last);
+    return vertices.erase(first, last);
+  }
+
   // Returns the index of a lowest of the leftmost vertices.
   // Precondition: The polygon must not be empty.
   int leftmostVertex() const {
@@ -114,8 +123,7 @@ class Polygon {
     int minIdx = 0;
     Point min = vertices[0];
     for (int i = 1; i < size(); ++i)
-      if (vertices[i].getX() < min.getX() ||
-          (vertices[i].getX() == min.getX() && vertices[i].getY() < min.getY())) {
+      if (vertices[i].x() < min.x() || (vertices[i].x() == min.x() && vertices[i].y() < min.y())) {
         minIdx = i;
         min = vertices[i];
       }
@@ -164,12 +172,25 @@ class Polygon {
     return true;
   }
 
+  // Returns the signed doubled area of this polygon.
+  int64_t doubledArea() const noexcept {
+    const auto n = vertices.size();
+    if (n < 3)
+      return 0;
+    int64_t area = 0;
+    for (auto i = 0; i < n - 2; ++i)
+      area += vertices[i + 1].x() * int64_t{vertices[i + 2].y() - vertices[i].y()};
+    area += vertices[n - 1].x() * int64_t{vertices[0].y() - vertices[n - 2].y()};
+    area += vertices[0].x() * int64_t{vertices[1].y() - vertices[n - 1].y()};
+    return area;
+  }
+
   // Returns true if r is inside the boundary of this polygon.
   bool contains(const Point& r) const {
     bool inside = false;
     for (int i = size() - 1, j = 0; j < size(); i = j++)
-      if ((r.getY() < vertices[i].getY()) != (r.getY() < vertices[j].getY()) &&
-          ::orientation(vertices[i], vertices[j], r) * (vertices[j].getY()-vertices[i].getY()) > 0)
+      if ((r.y() < vertices[i].y()) != (r.y() < vertices[j].y()) &&
+          ::orientation(vertices[i], vertices[j], r) * (vertices[j].y()-vertices[i].y()) > 0)
         inside = !inside;
     return inside;
   }

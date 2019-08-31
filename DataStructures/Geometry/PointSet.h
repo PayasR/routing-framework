@@ -3,6 +3,7 @@
 #include <cassert>
 #include <vector>
 
+#include "DataStructures/Geometry/Point.h"
 #include "DataStructures/Geometry/Rectangle.h"
 
 // A set of points on a two-dimensional plane.
@@ -43,11 +44,8 @@ class PointSet {
 
   // Inserts the point p into this set.
   void insert(const Point& p) {
-    if (points.empty())
-      boundingBox = Rectangle(p);
-    else
-      boundingBox.extend(p);
     points.push_back(p);
+    boundingBox.extend(p);
   }
 
   // Removes all points from this set.
